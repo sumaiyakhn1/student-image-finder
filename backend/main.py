@@ -9,24 +9,25 @@ app = FastAPI()
 # === Allow React frontend (CORS) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can replace "*" with your frontend URL later
+    allow_origins=["*"],  # Update later for your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === NEW GOOGLE SHEET LINK ===
+# === YOUR LATEST GOOGLE SHEET (CSV VIEW) ===
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1IrRRTxzEFodqxxlDTLaFZ-IXzmdr5P4xoFaYgfb6KyA/gviz/tq?tqx=out:csv"
 
 
-# === Load Google Sheet Data ===
+# === Helper: Load and sanitize sheet ===
 def load_data():
-    """Load Google Sheet as DataFrame and clean column names."""
+    """Load Google Sheet safely and clean up types & column names."""
     print("🔄 Fetching data from Google Sheet...")
     try:
-        df = pd.read_csv(SHEET_URL)
+        df = pd.read_csv(SHEET_URL, dtype=str)  # ✅ Force everything as string
         df.columns = [c.strip() for c in df.columns]
-        print("✅ Data loaded successfully. Columns found:", df.columns.tolist())
+        df = df.fillna("")  # Replace NaN with empty string
+        print(f"✅ Loaded {len(df)} rows from sheet.")
         return df
     except Exception as e:
         print("❌ ERROR loading Google Sheet:", e)
@@ -34,49 +35,60 @@ def load_data():
         raise HTTPException(status_code=500, detail=f"Failed to load Google Sheet: {e}")
 
 
-# === Convert Google Drive links for direct image rendering ===
+# === Helper: Convert Drive link to viewable URL ===
 def convert_drive_link(url):
-    """Turn a Google Drive 'file/d/...' URL into a direct-view image URL."""
-    if pd.isna(url) or not isinstance(url, str):
+    """Turn Google Drive 'file/d/.../view' link into a direct-view image link."""
+    if not url or not isinstance(url, str):
         return None
+
+    # Match /d/<file_id> pattern
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
     if match:
         file_id = match.group(1)
         return f"https://drive.google.com/uc?export=view&id={file_id}"
+
+    # If already uc?id= style
+    match2 = re.search(r"id=([a-zA-Z0-9_-]+)", url)
+    if match2:
+        file_id = match2.group(1)
+        return f"https://drive.google.com/uc?export=view&id={file_id}"
+
     return None
 
 
-# === Fetch Student by Scholar ID ===
+# === Endpoint: Get student by Scholar ID ===
 @app.get("/student/{scholar_id}")
 def get_student(scholar_id: str):
     print(f"🔍 Searching for Scholar ID: {scholar_id}")
     try:
         df = load_data()
 
-        # Ensure consistent column formatting
-        df.columns = [c.strip() for c in df.columns]
+        # Ensure consistent Scholar ID column
         if "Scholar ID" not in df.columns:
             raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in sheet")
 
-        # Clean & standardize Scholar IDs
-        df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip()
+        # Clean all Scholar IDs
+        df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip().str.replace(" ", "", regex=False)
 
-        # ✅ Partial + Case-insensitive matching
-        pattern = re.escape(scholar_id.strip())
-        row = df[df["Scholar ID"].str.contains(pattern, case=False, na=False)]
+        # Clean input Scholar ID
+        scholar_id = scholar_id.strip().replace(" ", "")
 
-        if row.empty:
+        # === FIX: Handle fraction-like IDs like "4523/2022" ===
+        # Some spreadsheets interpret 4523/2022 as a division — this ensures we match even those
+        possible_matches = df[df["Scholar ID"].str.contains(re.escape(scholar_id), case=False, na=False)]
+
+        if possible_matches.empty:
             raise HTTPException(status_code=404, detail=f"Scholar ID {scholar_id} not found")
 
-        # Convert row to dictionary
-        data = row.iloc[0].to_dict()
+        # Use the first match (or you can extend for multiple)
+        data = possible_matches.iloc[0].to_dict()
 
-        # Replace NaN → None
+        # Replace empty strings with None
         for key, value in data.items():
-            if pd.isna(value):
+            if value == "":
                 data[key] = None
 
-        # === Convert all image fields ===
+        # === Convert all image fields to viewable links ===
         image_fields = [
             "Student's Photograph",
             "Father's Photograph",
@@ -91,7 +103,7 @@ def get_student(scholar_id: str):
         ]
 
         for field in image_fields:
-            if field in data:
+            if field in data and data[field]:
                 data[field] = convert_drive_link(data[field])
 
         print(f"✅ Found data for Scholar ID: {scholar_id}")
