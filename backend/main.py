@@ -9,13 +9,13 @@ app = FastAPI()
 # === Allow frontend requests (React, Render, etc.) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can limit this later
+    allow_origins=["*"],  # Allow all for testing; restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === Google Sheet CSV Link (Updated) ===
+# === Google Sheet CSV Link ===
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1IrRRTxzEFodqxxlDTLaFZ-IXzmdr5P4xoFaYgfb6KyA/gviz/tq?tqx=out:csv"
 
 
@@ -26,8 +26,8 @@ def load_data():
     try:
         df = pd.read_csv(SHEET_URL, dtype=str)
         df.columns = [c.strip() for c in df.columns]
-        df = df.fillna("")  # replace NaN with empty string
-        print(f"✅ Loaded {len(df)} rows successfully.")
+        df = df.fillna("")  # Replace NaN with empty string
+        print(f"✅ Loaded {len(df)} rows successfully. Columns: {df.columns.tolist()}")
         return df
     except Exception as e:
         print("❌ Error loading sheet:", e)
@@ -70,15 +70,18 @@ def get_student(scholar_id: str):
         if "Scholar ID" not in df.columns:
             raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in Google Sheet")
 
-        # Clean and normalize scholar IDs
+        # Clean and normalize Scholar IDs
         df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip().str.replace(" ", "", regex=False)
 
-        # ✅ Extract numeric part before "/" for search
+        # Extract numeric part before "/" for search
         short_id = scholar_id.strip().split("/")[0].replace(" ", "")
         print(f"🧩 Extracted ID for search: {short_id}")
 
-        # Match partial IDs safely
-        row = df[df["Scholar ID"].str.contains(re.escape(short_id), case=False, na=False)]
+        # ✅ Match both full and short versions
+        row = df[
+            (df["Scholar ID"].str.strip().str.lower() == scholar_id.strip().lower())
+            | (df["Scholar ID"].str.contains(re.escape(short_id), case=False, na=False))
+        ]
 
         if row.empty:
             raise HTTPException(status_code=404, detail=f"Scholar ID {scholar_id} not found")
@@ -90,6 +93,9 @@ def get_student(scholar_id: str):
         for k, v in data.items():
             if v == "":
                 data[k] = None
+
+        # Print which columns are being treated as image fields
+        print("🖼️ Image Fields Found:", [f for f in data.keys() if "Photograph" in f or "Photo" in f])
 
         # Convert Google Drive image links
         image_fields = [
