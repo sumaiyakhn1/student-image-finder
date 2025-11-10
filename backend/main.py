@@ -6,28 +6,27 @@ import traceback
 
 app = FastAPI()
 
-# === Allow frontend requests (React, Render, etc.) ===
+# === Allow frontend requests ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for testing; restrict later
+    allow_origins=["*"],  # Allow all for testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === Google Sheet CSV Link ===
+# === Google Sheet CSV link ===
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1IrRRTxzEFodqxxlDTLaFZ-IXzmdr5P4xoFaYgfb6KyA/gviz/tq?tqx=out:csv"
 
 
 # === Helper: Load Sheet ===
 def load_data():
-    """Load Google Sheet data and normalize column names."""
-    print("🔄 Fetching data from Google Sheet...")
+    print("🔄 Loading Google Sheet data...")
     try:
         df = pd.read_csv(SHEET_URL, dtype=str)
         df.columns = [c.strip() for c in df.columns]
-        df = df.fillna("")  # Replace NaN with empty string
-        print(f"✅ Loaded {len(df)} rows successfully. Columns: {df.columns.tolist()}")
+        df = df.fillna("")  # Replace NaN with ""
+        print(f"✅ Loaded {len(df)} rows successfully.")
         return df
     except Exception as e:
         print("❌ Error loading sheet:", e)
@@ -35,21 +34,21 @@ def load_data():
         raise HTTPException(status_code=500, detail=f"Failed to load Google Sheet: {e}")
 
 
-# === Helper: Convert Google Drive link to viewable image URL ===
+# === Helper: Convert Drive link to thumbnail ===
 def convert_drive_link(url):
-    """Convert Google Drive file links into direct image URLs."""
+    """Convert Google Drive file link to a thumbnail URL."""
     if not url or not isinstance(url, str):
         return None
 
-    # Case 1: /file/d/<ID>/view
+    # Match file ID from /file/d/.../ or id=...
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
-    if match:
-        return f"https://drive.google.com/uc?export=view&id={match.group(1)}"
+    if not match:
+        match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
 
-    # Case 2: id=<ID>
-    match2 = re.search(r"id=([a-zA-Z0-9_-]+)", url)
-    if match2:
-        return f"https://drive.google.com/uc?export=view&id={match2.group(1)}"
+    if match:
+        file_id = match.group(1)
+        # ✅ Use thumbnail endpoint (faster, works in <img>)
+        return f"https://drive.google.com/thumbnail?id={file_id}"
 
     return None
 
@@ -66,38 +65,35 @@ def get_student(scholar_id: str):
     try:
         df = load_data()
 
-        # Ensure correct column exists
         if "Scholar ID" not in df.columns:
-            raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in Google Sheet")
+            raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in sheet")
 
-        # Clean and normalize Scholar IDs
         df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip().str.replace(" ", "", regex=False)
 
-        # Extract numeric part before "/" for search
+        # Extract numeric part before slash
         short_id = scholar_id.strip().split("/")[0].replace(" ", "")
-        print(f"🧩 Extracted ID for search: {short_id}")
+        print(f"🧩 Extracted search ID: {short_id}")
 
-        # ✅ Match both full and short versions
+        # Match both full and short version
         row = df[
-            (df["Scholar ID"].str.strip().str.lower() == scholar_id.strip().lower())
+            (df["Scholar ID"].str.lower() == scholar_id.strip().lower())
             | (df["Scholar ID"].str.contains(re.escape(short_id), case=False, na=False))
         ]
 
         if row.empty:
             raise HTTPException(status_code=404, detail=f"Scholar ID {scholar_id} not found")
 
-        # Get the first matching row
         data = row.iloc[0].to_dict()
 
-        # Replace empty strings with None for cleaner JSON
+        # Replace empty strings with None
         for k, v in data.items():
             if v == "":
                 data[k] = None
 
-        # Print which columns are being treated as image fields
-        print("🖼️ Image Fields Found:", [f for f in data.keys() if "Photograph" in f or "Photo" in f])
+        print("🖼️ Found image-related fields:",
+              [f for f in data.keys() if "Photograph" in f or "Photo" in f])
 
-        # Convert Google Drive image links
+        # Fields that may contain image links
         image_fields = [
             "Student's Photograph",
             "Father's Photograph",
@@ -111,16 +107,17 @@ def get_student(scholar_id: str):
             "Aadhar Card Of Sibling 2",
         ]
 
+        # Convert Drive URLs → thumbnail URLs
         for field in image_fields:
             if field in data and data[field]:
                 data[field] = convert_drive_link(data[field])
 
-        print(f"✅ Found record for Scholar ID: {short_id}")
+        print(f"✅ Record found for Scholar ID: {scholar_id}")
         return data
 
     except HTTPException:
         raise
     except Exception as e:
-        print("❌ Unexpected Error:", e)
+        print("❌ Unexpected error:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
