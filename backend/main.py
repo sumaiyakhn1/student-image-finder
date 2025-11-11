@@ -5,13 +5,15 @@ import pandas as pd
 import requests
 import re
 import traceback
+import threading
+import time
 
 app = FastAPI()
 
 # === Allow all origins (frontend React, etc.) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # You can restrict later (e.g., ["https://student-image-viewer.onrender.com"])
+    allow_origins=["*"],   # You can restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,21 +22,47 @@ app.add_middleware(
 # === Google Sheet CSV Export Link ===
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1IrRRTxzEFodqxxlDTLaFZ-IXzmdr5P4xoFaYgfb6KyA/gviz/tq?tqx=out:csv"
 
+# === Cache ===
+DATA_CACHE = {"df": None, "last_updated": None}
+
 
 # === Load data from Google Sheet ===
 def load_data():
     """Loads the Google Sheet into a pandas DataFrame."""
     print("🔄 Fetching latest data from Google Sheet...")
+    df = pd.read_csv(SHEET_URL, dtype=str)
+    df.columns = [c.strip() for c in df.columns]
+    df = df.fillna("")  # Replace NaN with empty strings
+    print(f"✅ Loaded {len(df)} rows successfully.")
+    return df
+
+
+def refresh_data_cache():
+    """Keeps refreshing Google Sheet data every 10 minutes."""
+    global DATA_CACHE
+    while True:
+        try:
+            df = load_data()
+            DATA_CACHE["df"] = df
+            DATA_CACHE["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"✅ Cache refreshed at {DATA_CACHE['last_updated']}")
+        except Exception as e:
+            print("❌ Error refreshing cache:", e)
+            traceback.print_exc()
+        time.sleep(600)  # Refresh every 10 minutes
+
+
+@app.on_event("startup")
+def on_startup():
+    """Load data once and start background refresh."""
     try:
-        df = pd.read_csv(SHEET_URL, dtype=str)
-        df.columns = [c.strip() for c in df.columns]
-        df = df.fillna("")  # Replace NaN with empty strings
-        print(f"✅ Loaded {len(df)} rows successfully.")
-        return df
+        DATA_CACHE["df"] = load_data()
+        DATA_CACHE["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
-        print("❌ Error loading sheet:", e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to load Google Sheet: {e}")
+        print("⚠️ Failed to load data on startup:", e)
+
+    thread = threading.Thread(target=refresh_data_cache, daemon=True)
+    thread.start()
 
 
 # === Helper: Extract file ID from Google Drive link ===
@@ -42,9 +70,7 @@ def extract_file_id(url):
     if not url or not isinstance(url, str):
         return None
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url) or re.search(r"id=([a-zA-Z0-9_-]+)", url)
-    if match:
-        return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 
 # === Proxy endpoint: fetch image directly from Google Drive ===
@@ -71,12 +97,15 @@ def image_proxy(file_id: str):
 def get_student(scholar_id: str):
     """
     Fetch student data using scholar ID.
-    Automatically handles IDs like '4523/2022' by extracting '4523' for matching.
+    Uses in-memory cached DataFrame for instant lookups.
     """
     print(f"🔍 Searching for Scholar ID: {scholar_id}")
 
+    if DATA_CACHE["df"] is None:
+        raise HTTPException(status_code=503, detail="Data cache not ready. Try again shortly.")
+
     try:
-        df = load_data()
+        df = DATA_CACHE["df"]
 
         if "Scholar ID" not in df.columns:
             raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in Google Sheet")
@@ -84,23 +113,18 @@ def get_student(scholar_id: str):
         # Normalize IDs
         df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip().str.replace(" ", "", regex=False)
 
-        # Extract the numeric or first part before "/"
         short_id = scholar_id.strip().split("/")[0].replace(" ", "")
-        print(f"🧩 Extracted short ID: {short_id}")
-
-        # Search flexibly — partial match
         row = df[df["Scholar ID"].str.contains(re.escape(short_id), case=False, na=False)]
+
         if row.empty:
             raise HTTPException(status_code=404, detail=f"Scholar ID {scholar_id} not found")
 
         data = row.iloc[0].to_dict()
 
-        # Replace empty strings with None for clean JSON
         for k, v in data.items():
             if v == "":
                 data[k] = None
 
-        # Convert image links to proxy URLs
         image_fields = [
             "Student's Photograph",
             "Father's Photograph",
@@ -118,11 +142,13 @@ def get_student(scholar_id: str):
             if data.get(field):
                 file_id = extract_file_id(data[field])
                 if file_id:
-                    # ✅ Replace with your proxy route (this always renders)
                     data[field] = f"https://student-image-finder.onrender.com/image-proxy/{file_id}"
 
         print(f"✅ Found data for Scholar ID: {short_id}")
-        return data
+        return {
+            "last_updated": DATA_CACHE["last_updated"],
+            **data
+        }
 
     except HTTPException:
         raise
