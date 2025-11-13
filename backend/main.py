@@ -110,18 +110,18 @@ def get_student(scholar_id: str):
         if "Scholar ID" not in df.columns:
             raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in Google Sheet")
 
-        # Normalize: remove spaces & lowercase
+        # === FIXED CLEANING LOGIC (NO substring match) ===
         df["Scholar ID Clean"] = (
             df["Scholar ID"]
             .astype(str)
-            .strip()
+            .str.strip()
             .str.replace(" ", "", regex=False)
             .str.lower()
         )
 
         short_id = scholar_id.strip().replace(" ", "").lower()
 
-        # Exact match ONLY
+        # === EXACT MATCH ONLY (no more contains()) ===
         row = df[df["Scholar ID Clean"] == short_id]
 
         if row.empty:
@@ -129,10 +129,12 @@ def get_student(scholar_id: str):
 
         data = row.iloc[0].to_dict()
 
+        # Replace empty strings with None
         for k, v in data.items():
             if v == "":
                 data[k] = None
 
+        # Image fields
         image_fields = [
             "Student's Photograph",
             "Father's Photograph",
@@ -146,6 +148,7 @@ def get_student(scholar_id: str):
             "Aadhar Card Of Sibling 2",
         ]
 
+        # Convert Drive links to proxy links
         for field in image_fields:
             if data.get(field):
                 file_id = extract_file_id(data[field])
