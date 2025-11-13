@@ -110,11 +110,19 @@ def get_student(scholar_id: str):
         if "Scholar ID" not in df.columns:
             raise HTTPException(status_code=500, detail="Column 'Scholar ID' not found in Google Sheet")
 
-        # Normalize IDs
-        df["Scholar ID"] = df["Scholar ID"].astype(str).str.strip().str.replace(" ", "", regex=False)
+        # Normalize: remove spaces & lowercase
+        df["Scholar ID Clean"] = (
+            df["Scholar ID"]
+            .astype(str)
+            .strip()
+            .str.replace(" ", "", regex=False)
+            .str.lower()
+        )
 
-        short_id = scholar_id.strip().split("/")[0].replace(" ", "")
-        row = df[df["Scholar ID"].str.contains(re.escape(short_id), case=False, na=False)]
+        short_id = scholar_id.strip().replace(" ", "").lower()
+
+        # Exact match ONLY
+        row = df[df["Scholar ID Clean"] == short_id]
 
         if row.empty:
             raise HTTPException(status_code=404, detail=f"Scholar ID {scholar_id} not found")
