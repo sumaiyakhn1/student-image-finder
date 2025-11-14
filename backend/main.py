@@ -63,6 +63,24 @@ def on_startup():
     threading.Thread(target=refresh_data_cache, daemon=True).start()
 
 
+# === Manual Refresh Endpoint ===
+@app.get("/refresh-sheet")
+def refresh_sheet():
+    try:
+        df = load_data()
+        DATA_CACHE["df"] = df
+        DATA_CACHE["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        print("🔄 Sheet manually refreshed!")
+        return {
+            "status": "success",
+            "message": "Sheet refreshed successfully",
+            "last_updated": DATA_CACHE["last_updated"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # === Helper: Extract file ID from Google Drive link ===
 def extract_file_id(url):
     if not url or not isinstance(url, str):
@@ -110,7 +128,7 @@ def get_student(scholar_id: str):
             .astype(str)
             .str.strip()
             .str.replace(" ", "", regex=False)
-            .str.split("/").str[0]      # <-- Extract part before slash
+            .str.split("/").str[0]
             .str.lower()
         )
 
